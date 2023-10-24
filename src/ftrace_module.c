@@ -8,9 +8,23 @@
 #include <linux/version.h>
 #include <linux/kprobes.h>
 #include <linux/sched.h>
+#include <linux/net.h>
+#include <linux/in.h>
 
 MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_LICENSE("GPL");
+
+typedef struct
+{
+	pid_t    pid;
+	uint64_t bytes_received;
+	uint64_t bytes_sent;
+} netinfo_t;
+
+netinfo_t process_info = { -1, 0, 0 };
+static char *filename;
+
+module_param(filename, charp, 0);
 
 #define pr_fmt(fmt) "ftrace_hook: " fmt
 
@@ -239,7 +253,8 @@ static char *duplicate_filename(const char __user *filename)
 	if (!kernel_filename)
 		return NULL;
 
-	if (strncpy_from_user(kernel_filename, filename, 4096) < 0) {
+	if (strncpy_from_user(kernel_filename, filename, 4096) < 0)
+	{
 		kfree(kernel_filename);
 		return NULL;
 	}
@@ -247,59 +262,36 @@ static char *duplicate_filename(const char __user *filename)
 	return kernel_filename;
 }
 
-#ifdef PTREGS_SYSCALL_STUBS
-static asmlinkage long (*real_sys_send)(struct pt_regs *regs);
+#ifndef PTREGS_SYSCALL_STUBS
+static asmlinkage long (*real_sys_sendto)(int fd, void __user *buff, size_t len, 
+	            unsigned int flags, struct sockaddr __user *addr, int addr_len);
 
-static asmlinkage long fh_sys_send(struct pt_regs *regs)
+static asmlinkage long fh_sys_sendto(int fd, void __user *buff, size_t len, 
+	            unsigned int flags, struct sockaddr __user *addr, int addr_len)
 {
-	long ret = real_sys_send(regs);
-
-	if (ret == 29)
-	{
-		pr_info("Syscall sys_sendto() was used to send %ld bytes.\n", ret);
-		
-		// pr_info("bx: %lu\n", regs->bx);
-		// pr_info("cx: %lu\n", regs->cx);
-		// pr_info("dx: %lu\n", regs->dx);
-
-		// source index = message
-		pr_info("Message: %s.\n", regs->si);
-
-		pr_info("di: %lu\n", regs->di);
-		// pr_info("bp: %s\n", regs->bp);
-		// pr_info("ax: %s\n", regs->ax);
-
-		// ppr_info("ds: %hu\n", regs->ds); // ERROR
-		// ppr_info("es: %hu\n", regs->es); // ERROR
-		// ppr_info("fs: %hu\n", regs->fs); // ERROR
-		// pr_info("gs: %s\n", regs->gs); // ERROR
-
-		// pr_info("orig_ax: %s\n", regs->orig_ax);
-		// pr_info("ip: %lu\n", regs->ip);
-		// pr_info("cs: %s\n", regs->cs);
-		// pr_info("flags: %lu\n", regs->flags);
-		// pr_info("sp: %s\n", regs->sp);
-		// pr_info("ss: %s\n", regs->ss);
-	}
+	long ret = real_sys_sendto(fd, buff, len, flags, addr, addr_len);
+	pr_info("Process with PID = %d sent %zu bytes.\n", current->pid, len);
 
 	return ret;
 }
 #else
-static asmlinkage long (*real_sys_send)(unsigned long clone_flags,
-		unsigned long newsp, int __user *parent_tidptr,
-		int __user *child_tidptr, unsigned long tls);
+static asmlinkage long (*real_sys_sendto)(struct pt_regs *regs);
 
-static asmlinkage long fh_sys_send(unsigned long clone_flags,
-		unsigned long newsp, int __user *parent_tidptr,
-		int __user *child_tidptr, unsigned long tls)
+static asmlinkage long fh_sys_sendto(struct pt_regs *regs)
 {
-	long ret;
+	long ret = real_sys_sendto(regs);
+	pid_t pid = current->pid;
+	size_t len = strlen(regs->si);
 
-	ret = real_sys_send(clone_flags, newsp, parent_tidptr,
-		child_tidptr, tls);
-
-	pr_info("Syscall sys_sendto() was used to send %ld bytes.\n", ret);
-
+	if (pid == process_info.pid)
+	{
+		process_info.bytes_sent += len;
+	}
+	else
+	{
+		pr_info("Process with PID = %d sent overall %zu bytes.\n", pid, 
+			process_info.bytes_sent);
+	}
 
 	return ret;
 }
@@ -310,44 +302,35 @@ static asmlinkage long (*real_sys_execve)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_execve(struct pt_regs *regs)
 {
-	long ret;
-	char *kernel_filename;
+	if (process_info.pid == -1)
+	{
+		char *kernel_filename = duplicate_filename((void*)regs->di);
+		if (strcmp(filename, kernel_filename) == 0)
+		{
+			process_info.pid = current->pid;
+			pr_info("Executed programm %s with PID = %d.\n", filename,
+															 process_info.pid);
+		}
+		kfree(kernel_filename);
+	}
 
-	kernel_filename = duplicate_filename((void*)regs->di);
-
-	pr_info("execve() before: %s\n", kernel_filename);
-
-	kfree(kernel_filename);
-
-	ret = real_sys_execve(regs);
-
-	pr_info("execve() after: %ld\n", ret);
-
-	return ret;
+	return real_sys_execve(regs);
 }
-#else
-static asmlinkage long (*real_sys_execve)(const char __user *filename,
-		const char __user *const __user *argv,
-		const char __user *const __user *envp);
+#endif
 
-static asmlinkage long fh_sys_execve(const char __user *filename,
-		const char __user *const __user *argv,
-		const char __user *const __user *envp)
+#ifdef PTREGS_SYSCALL_STUBS
+static asmlinkage long (*real_sys_exit)(struct pt_regs *regs);
+
+static asmlinkage long fh_sys_exit(struct pt_regs *regs)
 {
-	long ret;
-	char *kernel_filename;
+	if (process_info.pid == current->pid)
+	{
+		pr_info("Process with PID = %d exited.\n", process_info.pid);
+		pr_info("Received: %d bytes.\n", process_info.bytes_received);
+		pr_info("Sent: %d bytes.\n", process_info.bytes_sent);
+	}
 
-	kernel_filename = duplicate_filename(filename);
-
-	pr_info("execve() before: %s\n", kernel_filename);
-
-	kfree(kernel_filename);
-
-	ret = real_sys_execve(filename, argv, envp);
-
-	pr_info("execve() after: %ld\n", ret);
-
-	return ret;
+	return real_sys_exit(regs);
 }
 #endif
 
@@ -370,11 +353,15 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 
 static struct ftrace_hook demo_hooks[] = 
 {
-	HOOK("sys_sendto", fh_sys_send, &real_sys_send),
+	//HOOK("sys_sendto", fh_sys_sendto, &real_sys_sendto),
+	//HOOK("sys_recvfrom", fh_sys_recvfrom, &real_sys_recvfrom),
+	HOOK("sys_exit_group", fh_sys_exit, &real_sys_exit),
+	HOOK("sys_execve", fh_sys_execve, &real_sys_execve),
 };
 
 static int __init fh_init(void)
 {
+	pr_info("[+] ptrace module filename is %s.\n", filename);
 	int err = fh_install_hooks(demo_hooks, ARRAY_SIZE(demo_hooks));
 	
 	if (!err)
