@@ -11,7 +11,9 @@
 #include <linux/net.h>
 #include <linux/in.h>
 
-MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
+#define pr_fmt(fmt) "[ptrace module] " fmt
+
+MODULE_DESCRIPTION("LKM for monitoring netstat of the process");
 MODULE_LICENSE("GPL");
 
 typedef struct
@@ -22,23 +24,24 @@ typedef struct
 } netinfo_t;
 
 netinfo_t process_info = { -1, 0, 0 };
-static char *filename;
 
+static char *filename = "";
 module_param(filename, charp, 0);
-
-#define pr_fmt(fmt) "ftrace_hook: " fmt
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
 static unsigned long lookup_name(const char *name)
 {
-	struct kprobe kp = {
+	struct kprobe kp = 
+	{
 		.symbol_name = name
 	};
 	unsigned long retval;
 
-	if (register_kprobe(&kp) < 0) return 0;
+	if (register_kprobe(&kp) < 0) 
+		return 0;
 	retval = (unsigned long) kp.addr;
 	unregister_kprobe(&kp);
+	
 	return retval;
 }
 #else
@@ -87,19 +90,20 @@ static __always_inline struct pt_regs *ftrace_get_regs(struct ftrace_regs *fregs
  */
 struct ftrace_hook
 {
-	const char *name;
-	void *function;
-	void *original;
+	const char*   name;
+	void*         function;
+	void*         original;
 	unsigned long address;
-	struct ftrace_ops ops;
+	struct        ftrace_ops ops;
 };
 
 static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
 	hook->address = lookup_name(hook->name);
 
-	if (!hook->address) {
-		pr_debug("unresolved symbol: %s\n", hook->name);
+	if (!hook->address) 
+	{
+		pr_debug("Can't hook syscall: %s.\n", hook->name);
 		return -ENOENT;
 	}
 
@@ -134,9 +138,7 @@ static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
  */
 int fh_install_hook(struct ftrace_hook *hook)
 {
-	int err;
-
-	err = fh_resolve_hook_address(hook);
+	int err = fh_resolve_hook_address(hook);
 	if (err)
 		return err;
 
@@ -152,13 +154,15 @@ int fh_install_hook(struct ftrace_hook *hook)
 	                | FTRACE_OPS_FL_IPMODIFY;
 
 	err = ftrace_set_filter_ip(&hook->ops, hook->address, 0, 0);
-	if (err) {
+	if (err) 
+	{
 		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
 		return err;
 	}
 
 	err = register_ftrace_function(&hook->ops);
-	if (err) {
+	if (err) 
+	{
 		pr_debug("register_ftrace_function() failed: %d\n", err);
 		ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
 		return err;
@@ -173,15 +177,15 @@ int fh_install_hook(struct ftrace_hook *hook)
  */
 void fh_remove_hook(struct ftrace_hook *hook)
 {
-	int err;
-
-	err = unregister_ftrace_function(&hook->ops);
-	if (err) {
+	int err = unregister_ftrace_function(&hook->ops);
+	if (err) 
+	{
 		pr_debug("unregister_ftrace_function() failed: %d\n", err);
 	}
 
 	err = ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
-	if (err) {
+	if (err) 
+	{
 		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
 	}
 }
@@ -200,7 +204,8 @@ int fh_install_hooks(struct ftrace_hook *hooks, size_t count)
 	int err;
 	size_t i;
 
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count; i++) 
+	{
 		err = fh_install_hook(&hooks[i]);
 		if (err)
 			goto error;
@@ -209,7 +214,8 @@ int fh_install_hooks(struct ftrace_hook *hooks, size_t count)
 	return 0;
 
 error:
-	while (i != 0) {
+	while (i != 0) 
+	{
 		fh_remove_hook(&hooks[--i]);
 	}
 
@@ -262,35 +268,34 @@ static char *duplicate_filename(const char __user *filename)
 	return kernel_filename;
 }
 
-#ifndef PTREGS_SYSCALL_STUBS
-static asmlinkage long (*real_sys_sendto)(int fd, void __user *buff, size_t len, 
-	            unsigned int flags, struct sockaddr __user *addr, int addr_len);
-
-static asmlinkage long fh_sys_sendto(int fd, void __user *buff, size_t len, 
-	            unsigned int flags, struct sockaddr __user *addr, int addr_len)
-{
-	long ret = real_sys_sendto(fd, buff, len, flags, addr, addr_len);
-	pr_info("Process with PID = %d sent %zu bytes.\n", current->pid, len);
-
-	return ret;
-}
-#else
+#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_sendto)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_sendto(struct pt_regs *regs)
 {
 	long ret = real_sys_sendto(regs);
 	pid_t pid = current->pid;
-	size_t len = strlen(regs->si);
 
 	if (pid == process_info.pid)
 	{
-		process_info.bytes_sent += len;
+		process_info.bytes_sent += ret;
 	}
-	else
+
+	return ret;
+}
+#endif
+
+#ifdef PTREGS_SYSCALL_STUBS
+static asmlinkage long (*real_sys_recvfrom)(struct pt_regs *regs);
+
+static asmlinkage long fh_sys_recvfrom(struct pt_regs *regs)
+{
+	long ret = real_sys_recvfrom(regs);
+	pid_t pid = current->pid;
+
+	if (pid == process_info.pid)
 	{
-		pr_info("Process with PID = %d sent overall %zu bytes.\n", pid, 
-			process_info.bytes_sent);
+		process_info.bytes_received += ret;
 	}
 
 	return ret;
@@ -304,11 +309,14 @@ static asmlinkage long fh_sys_execve(struct pt_regs *regs)
 {
 	if (process_info.pid == -1)
 	{
-		char *kernel_filename = duplicate_filename((void*)regs->di);
-		if (strcmp(filename, kernel_filename) == 0)
+		char *kernel_filename = duplicate_filename((void *)regs->di);
+		char *filename_ = kernel_filename + strlen(kernel_filename) - 1;
+		while (filename_ >= kernel_filename && *filename_ != '/')
+			--filename_;
+		if (strcmp(filename, ++filename_) == 0)
 		{
 			process_info.pid = current->pid;
-			pr_info("Executed programm %s with PID = %d.\n", filename,
+			pr_info("programm <<%s>> with PID = %d executed.\n", filename,
 															 process_info.pid);
 		}
 		kfree(kernel_filename);
@@ -325,9 +333,10 @@ static asmlinkage long fh_sys_exit(struct pt_regs *regs)
 {
 	if (process_info.pid == current->pid)
 	{
-		pr_info("Process with PID = %d exited.\n", process_info.pid);
-		pr_info("Received: %d bytes.\n", process_info.bytes_received);
-		pr_info("Sent: %d bytes.\n", process_info.bytes_sent);
+		pr_info("process <<%s>> with PID = %d exited.\n", filename, 
+														  process_info.pid);
+		pr_info("received: %d bytes.\n", process_info.bytes_received);
+		pr_info("sent: %d bytes.\n", process_info.bytes_sent);
 	}
 
 	return real_sys_exit(regs);
@@ -353,19 +362,25 @@ static asmlinkage long fh_sys_exit(struct pt_regs *regs)
 
 static struct ftrace_hook demo_hooks[] = 
 {
-	//HOOK("sys_sendto", fh_sys_sendto, &real_sys_sendto),
-	//HOOK("sys_recvfrom", fh_sys_recvfrom, &real_sys_recvfrom),
-	HOOK("sys_exit_group", fh_sys_exit, &real_sys_exit),
 	HOOK("sys_execve", fh_sys_execve, &real_sys_execve),
+	HOOK("sys_sendto", fh_sys_sendto, &real_sys_sendto),
+	HOOK("sys_recvfrom", fh_sys_recvfrom, &real_sys_recvfrom),
+	HOOK("sys_exit_group", fh_sys_exit, &real_sys_exit),
 };
 
 static int __init fh_init(void)
 {
-	pr_info("[+] ptrace module filename is %s.\n", filename);
+	if (strlen(filename) < 1)
+	{
+		pr_info("filename should be given.\n");
+		return -1;
+	}
+
+	pr_info("file <<%s>> is being monitored.\n", filename);
 	int err = fh_install_hooks(demo_hooks, ARRAY_SIZE(demo_hooks));
 	
 	if (!err)
-		pr_info("[+] ptrace module is loaded.\n");
+		pr_info("loaded.\n");
 
 	return err;
 }
@@ -374,7 +389,7 @@ static void __exit fh_exit(void)
 {
 	fh_remove_hooks(demo_hooks, ARRAY_SIZE(demo_hooks));
 
-	pr_info("[+] ptrace module is unloaded.\n");
+	pr_info("unloaded.\n");
 }
 
 module_init(fh_init);
