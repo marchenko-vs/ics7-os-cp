@@ -165,16 +165,8 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 		fh_remove_hook(&hooks[i]);
 }
 
-#ifndef CONFIG_X86_64
-#error Currently only x86_64 architecture is supported
-#endif
-
 #if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
 #define PTREGS_SYSCALL_STUBS 1
-#endif
-
-#if !USE_FENTRY_OFFSET
-#pragma GCC optimize("-fno-optimize-sibling-calls")
 #endif
 
 static char *duplicate_filename(const char __user *filename)
@@ -191,85 +183,90 @@ static char *duplicate_filename(const char __user *filename)
 	return kernel_filename;
 }
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_send)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_send(struct pt_regs *regs)
 {
-	long ret = real_sys_send(regs);
+	long bytes = real_sys_send(regs);
 	pid_t pid = current->pid;
-	if (pid == process_info.pid)
-		process_info.bytes_sent += ret;
-	return ret;
+	if (pid == process_info.pid && bytes > 0)
+	{
+		process_info.bytes_sent += bytes;
+		printk(KERN_INFO "Ftrace module: process sent %ld bytes.\n", bytes);
+	}
+	return bytes;
 }
-#endif
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_sendto)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_sendto(struct pt_regs *regs)
 {
-	long ret = real_sys_sendto(regs);
+	long bytes = real_sys_sendto(regs);
 	pid_t pid = current->pid;
-	if (pid == process_info.pid)
-		process_info.bytes_sent += ret;
-	return ret;
+	if (pid == process_info.pid && bytes > 0)
+	{
+		process_info.bytes_sent += bytes;
+		printk(KERN_INFO "Ftrace module: process sent %ld bytes.\n", bytes);
+	}
+	return bytes;
 }
-#endif
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_sendmsg)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_sendmsg(struct pt_regs *regs)
 {
-	long ret = real_sys_sendmsg(regs);
+	long bytes = real_sys_sendmsg(regs);
 	pid_t pid = current->pid;
-	if (pid == process_info.pid)
-		process_info.bytes_sent += ret;
-	return ret;
+	if (pid == process_info.pid && bytes > 0)
+	{
+		process_info.bytes_sent += bytes;
+		printk(KERN_INFO "Ftrace module: process sent %ld bytes.\n", bytes);
+	}
+	return bytes;
 }
-#endif
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_recv)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_recv(struct pt_regs *regs)
 {
-	long ret = real_sys_recv(regs);
+	long bytes = real_sys_recv(regs);
 	pid_t pid = current->pid;
-	if (pid == process_info.pid)
-		process_info.bytes_received += ret;
-	return ret;
+	if (pid == process_info.pid && bytes > 0)
+	{
+		process_info.bytes_received += bytes;
+		printk(KERN_INFO "Ftrace module: process received %ld bytes.\n", bytes);
+	}
+	return bytes;
 }
-#endif
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_recvfrom)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_recvfrom(struct pt_regs *regs)
 {
-	long ret = real_sys_recvfrom(regs);
+	long bytes = real_sys_recvfrom(regs);
 	pid_t pid = current->pid;
-	if (pid == process_info.pid)
-		process_info.bytes_received += ret;
-	return ret;
+	if (pid == process_info.pid && bytes > 0)
+	{
+		process_info.bytes_received += bytes;
+		printk(KERN_INFO "Ftrace module: process received %ld bytes.\n", bytes);
+	}
+	return bytes;
 }
-#endif
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_recvmsg)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_recvmsg(struct pt_regs *regs)
 {
-	long ret = real_sys_recvmsg(regs);
+	long bytes = real_sys_recvmsg(regs);
 	pid_t pid = current->pid;
-	if (pid == process_info.pid)
-		process_info.bytes_received += ret;
-	return ret;
+	if (pid == process_info.pid && bytes > 0)
+	{
+		process_info.bytes_received += bytes;
+		printk(KERN_INFO "Ftrace module: process received %ld bytes.\n", bytes);
+	}
+	return bytes;
 }
-#endif
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_execve)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_execve(struct pt_regs *regs)
@@ -279,33 +276,31 @@ static asmlinkage long fh_sys_execve(struct pt_regs *regs)
 		char *kernel_filename = duplicate_filename((void *)regs->di);
 		char *filename_ = kernel_filename + strlen(kernel_filename) - 1;
 		while (filename_ >= kernel_filename && *filename_ != '/')
+		{
 			--filename_;
+		}
 		if (strcmp(filename, ++filename_) == 0)
 		{
 			process_info.pid = current->pid;
-			printk(KERN_INFO "Ftrace module: program %s with PID = %d executed.\n", filename,
-															 process_info.pid);
+			printk(KERN_INFO "Ftrace module: program %s with PID = %d executed.\n", filename, process_info.pid);
 		}
 		kfree(kernel_filename);
 	}
 	return real_sys_execve(regs);
 }
-#endif
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_exit)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_exit(struct pt_regs *regs)
 {
 	if (process_info.pid == current->pid)
 	{
-		printk(KERN_INFO "Ftrace module: process with PID = %d exited.\n", filename, process_info.pid);
-		printk(KERN_INFO "Ftrace module: received: %d bytes.\n", process_info.bytes_received);
-		printk(KERN_INFO "Ftrace module: sent: %d bytes.\n", process_info.bytes_sent);
+		printk(KERN_INFO "Ftrace module: process with PID = %d exited.\n", process_info.pid);
+		printk(KERN_INFO "Ftrace module: received %d bytes.\n", process_info.bytes_received);
+		printk(KERN_INFO "Ftrace module: sent     %d bytes.\n", process_info.bytes_sent);
 	}
 	return real_sys_exit(regs);
 }
-#endif
 
 #ifdef PTREGS_SYSCALL_STUBS
 #define SYSCALL_NAME(name) ("__x64_" name)
@@ -313,12 +308,12 @@ static asmlinkage long fh_sys_exit(struct pt_regs *regs)
 #define SYSCALL_NAME(name) (name)
 #endif
 
-#define HOOK(_name, _function, _original)	\
-	{					\
-		.name = SYSCALL_NAME(_name),	\
-		.function = (_function),	\
-		.original = (_original),	\
-	}
+#define HOOK(_name, _function, _original) \
+{					             \
+	.name = SYSCALL_NAME(_name), \
+	.function = (_function),	 \
+	.original = (_original),	 \
+}
 
 static struct ftrace_hook hook_array[] = 
 {
@@ -343,7 +338,7 @@ static int __init fh_init(void)
 	if (!err)
 	{
 		printk(KERN_INFO "Ftrace module: loaded.\n");
-		printk(KERN_INFO "Ftrace module: file %s is being monitored.\n", filename);
+		printk(KERN_INFO "Ftrace module: program %s is being monitored.\n", filename);
 	}
 	return err;
 }
