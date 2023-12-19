@@ -1,6 +1,5 @@
 ifneq ($(KERNELRELEASE),)
-	obj-m := ftrace_module.o
-
+	obj-m := net_traffic.o
 else
 	CURRENT = $(shell uname -r)
 	KDIR = /lib/modules/$(CURRENT)/build 
